@@ -59,6 +59,8 @@ export interface Params {
   maxEntriesPerCoin: number;
   /** Max new entries decided in a single batch. */
   maxEntriesPerBatch: number;
+  /** An add needs the price at least this far above the previous buy, in bps. */
+  addStepBps: number;
   /** Price must be at least this share of the window high, in bps. */
   nearHighBps: number;
   /** Slippage allowed on buys / sells, in bps. */
@@ -68,30 +70,31 @@ export interface Params {
 
 export const DEFAULT_PARAMS: Params = {
   windowSlots: 40,
-  minRiseBps: 800,
+  minRiseBps: 300,
   maxRiseBps: 40000,
-  minBreakoutBps: 300,
-  maxBreakoutBps: 15000,
-  minNetSolLamports: 100_000_000n,
-  minBuys: 3,
+  minBreakoutBps: 0,
+  maxBreakoutBps: 100000,
+  minNetSolLamports: 50_000_000n,
+  minBuys: 2,
   minBuyers: 2,
-  minRealSolLamports: 1_500_000_000n,
-  maxRealSolLamports: 80_000_000_000n,
+  minRealSolLamports: 50_000_000_000n,
+  maxRealSolLamports: 85_000_000_000n,
   minAgeSlots: 0,
-  maxAgeSlots: 3000,
-  stakeLamports: 50_000_000n,
+  maxAgeSlots: 400000,
+  stakeLamports: 80_000_000n,
   minBuyLamports: 10_000_000n,
-  takeProfitBps: 3000,
-  stopLossBps: 1500,
-  trailBps: 2000,
+  takeProfitBps: 10000,
+  stopLossBps: 1000,
+  trailBps: 2500,
   trailArmBps: 1000,
-  maxHoldSlots: 600,
+  maxHoldSlots: 1500,
   cooldownSlots: 300,
   maxEntriesPerCoin: 1,
   maxEntriesPerBatch: 4,
-  nearHighBps: 9000,
-  buySlippageBps: 1000,
-  sellSlippageBps: 10000,
+  addStepBps: 500,
+  nearHighBps: 8000,
+  buySlippageBps: 500,
+  sellSlippageBps: 3000,
 };
 
 interface Sample {
@@ -105,6 +108,7 @@ interface Sample {
 interface Book {
   createdSlot: number | null;
   createPrice: number;
+  lastBuyPrice: number;
   samples: Sample[];
   entries: number;
   coolUntil: number;
@@ -134,7 +138,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
   const book = (mint: Pubkey): Book => {
     let b = books.get(mint);
     if (b === undefined) {
-      b = { createdSlot: null, createPrice: 0, samples: [], entries: 0, coolUntil: -1, entrySlot: -1, peakPrice: 0 };
+      b = { createdSlot: null, createPrice: 0, lastBuyPrice: 0, samples: [], entries: 0, coolUntil: -1, entrySlot: -1, peakPrice: 0 };
       books.set(mint, b);
     }
     return b;
@@ -164,6 +168,9 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
           pendingBuy.delete(f.mint);
           if (f.status !== 'filled') continue;
           book(f.mint).entries += 1;
+          const tokens = BigInt(f.token_amount);
+          const paid = BigInt(f.quote_lamports);
+          if (tokens > 0n && paid > 0n) book(f.mint).lastBuyPrice = Number(paid) / Number(tokens);
           const pos = state.positions.get(f.mint);
           if (pos !== undefined && !held.has(f.mint)) {
             const costPrice = Number(pos.cost_lamports) / Number(pos.token_amount);
@@ -239,20 +246,26 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         }
       }
 
-      // Entries: coins that traded in this batch, in batch order, strongest first
-      // only by the order the harness delivered them (deterministic, no sorting
-      // on floats that could differ across runs).
+      // Entries: coins that traded in this batch, in batch order. A first buy
+      // needs a free position slot; an add to a held coin needs the price to
+      // have confirmed upward since the previous buy (pyramiding into a
+      // winner, since one reply may only spend 1% of a curve's real reserve).
       let entered = 0;
       for (const [mint] of flow) {
         if (entered >= p.maxEntriesPerBatch) break;
         if (orders.length >= state.hello.caps.max_orders_per_batch) break;
-        if (openSlots <= 0) break;
         const b = book(mint);
         const curve = state.curves.get(mint);
         if (curve === undefined || curve.complete) continue;
-        if (state.positions.has(mint) || pendingBuy.has(mint)) continue;
+        if (pendingBuy.has(mint) || pendingSell.has(mint)) continue;
         if (b.entries >= p.maxEntriesPerCoin) continue;
         if (batch.slot < b.coolUntil) continue;
+        const heldHere = state.positions.has(mint);
+        if (heldHere) {
+          if (b.lastBuyPrice > 0 && priceOf(state, mint) * BPS < b.lastBuyPrice * (BPS + p.addStepBps)) continue;
+        } else if (openSlots <= 0) {
+          break;
+        }
         const age = b.createdSlot === null ? p.maxAgeSlots + 1 : batch.slot - b.createdSlot;
         if (age < p.minAgeSlots || age > p.maxAgeSlots) continue;
         if (curve.real_quote_reserves < p.minRealSolLamports || curve.real_quote_reserves > p.maxRealSolLamports) continue;
@@ -293,7 +306,7 @@ export function createStrategy(p: Params = DEFAULT_PARAMS) {
         orders.push({ side: 'buy', mint, quote_lamports: amount, max_slippage_bps: p.buySlippageBps });
         pendingBuy.add(mint);
         free -= amount + tx;
-        openSlots -= 1;
+        if (!heldHere) openSlots -= 1;
         entered += 1;
       }
       return orders;
