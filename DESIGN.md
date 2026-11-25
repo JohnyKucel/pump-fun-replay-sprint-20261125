@@ -137,5 +137,11 @@ What worked, in order (official-seed local harness, `tools/backtest.ts`):
 - Net PnL > 0 SOL after all fees is required for a paid place; the revised
   bot scores **+0.408 SOL on the dev window** (local harness, official
   seed), with a bootstrap median of +0.440 SOL and p10 +0.041 SOL — see
-  the revision log above for the full numbers and the official
-  `grade-local` confirmation.
+  the revision log above for the full numbers. Official `grade-local`
+  (commit d59f68b, driver process): **net +0.399 SOL, 90% interval
+  [−0.122, +0.929] SOL, 75 fills over 25 coins, 30 round trips, win rate
+  43.3%, max drawdown 3.75%, fees 0.097 SOL curve + 0.008 SOL tx, net at
+  2x fees +0.290 SOL, guardrails met, top 3 coins 29% of gains (net
+  without them still +0.14 SOL)**. The interval still straddles zero, so
+  the final window decides it — but this is the best shape found on the
+  dev window, with real margin over breakeven.
