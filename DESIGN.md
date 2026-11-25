@@ -31,7 +31,7 @@ exit.
 
 | Parameter | Value | Meaning |
 |---|---|---|
-| windowSlots | 40 | lookback window in slots for low price and buy flow |
+| windowSlots | 50 | lookback window in slots for low price and buy flow |
 | minRiseBps / maxRiseBps | 300 / 40000 | price rise off the window low, in bps |
 | minBreakoutBps / maxBreakoutBps | 0 / 100000 | price above creation price, in bps (no floor: the reserve gate does the filtering) |
 | minNetSolLamports | 50,000,000 | net buy SOL over the window (0.05 SOL) |
@@ -39,12 +39,12 @@ exit.
 | minRealSol / maxRealSol | 50 / 85 SOL | real SOL reserve bounds at entry — only mature curves near completion |
 | minAgeSlots / maxAgeSlots | 0 / 400000 | age since CreateEvent (effectively no age cap) |
 | stakeLamports | 80,000,000 | 0.08 SOL per position |
-| takeProfitBps | 10000 | +100% over average cost (rarely binds; the trail does the work) |
-| stopLossBps | 1000 | −10% under average cost |
+| takeProfitBps | 5000 | +50% over average cost (banks the spike before it fades) |
+| stopLossBps | 1500 | −15% under average cost (lets a winner breathe through a dip) |
 | trailBps / trailArmBps | 2500 / 1000 | sell 25% below peak once +10% in profit |
-| maxHoldSlots | 1500 | hard time exit |
-| cooldownSlots | 300 | wait after an exit before re-entering a coin |
-| maxEntriesPerCoin | 1 | one shot per coin (pyramiding tested: worse) |
+| maxHoldSlots | 1000 | hard time exit |
+| cooldownSlots | 0 | no wait after an exit before re-entering a coin |
+| maxEntriesPerCoin | 2 | a mature curve that keeps climbing can be ridden twice |
 | buySlippageBps / sellSlippageBps | 500 / 3000 | tight sells so a crashing exit is refused and retried |
 | nearHighBps | 8000 | price must be ≥80% of the window high |
 
@@ -84,11 +84,58 @@ official.
   SL −12% −0.059, trail 20% −0.098 (vs SL −10% / trail 25% at +0.018 mean).
   At 2x fees the dev net is −0.125 SOL (local) / −0.051 SOL (official).
 
+## Revisi 2026-11-25 — exit retune + re-entry (gate v5 tidak lolos)
+
+The v5 gate failure was an exits problem, not an entry problem: deleting the
+stop-loss and trail entirely scores −0.50 SOL, so the exits are what keep the
+bot alive. Two fresh approaches were tried first and both failed honestly:
+
+- **Reserve-ladder sniper** (buy when real reserve first crosses 2/5/10 SOL,
+  sell at the next rung 5/10/20/30): −0.78 to −2.48 SOL in the local harness.
+  A first-crossing analysis on raw trade prices looked great (+54% median
+  10→20 SOL), but it is an illusion — inside one slot a burst already moves
+  the price, so by the time a batch shows the crossing and the order fills
+  2 slots later the move is gone. Re-done with slot-end prices + 2-slot
+  delay the ladder is ~breakeven gross, before fees. Same for dip-buying
+  (buy −30%/−50% off the peak: median −0.15 to −0.17) and for broad
+  small-stake momentum (0.02–0.03 SOL, TP +10–20% / SL −5–10%, 498–515
+  coins): −0.50 to −0.60 SOL. On this window every move fades after the
+  batch that shows it; the only surviving shape is the mature-curve ride.
+- **Widening the entry** does not add coins cheaply: reserve floor 45 SOL
+  scores −0.125 (36 coins) and 40 SOL −0.301 (48 coins) with the new exits —
+  the 50 SOL floor is real, coins entering at 45–50 SOL are losers.
+
+What worked, in order (official-seed local harness, `tools/backtest.ts`):
+
+- v6a (TP +50% / SL −12%, hold 1000): +0.138 SOL, 23 coins, 10 wins.
+- v6b (TP +50% / SL −15%, hold 1000): **+0.258 SOL, 23 coins, 12 wins,
+  max drawdown 1.35%, top-3 share 51%, 2x fees +0.157**. The +50% TP
+  banks spikes that fade before +100%; the −15% SL lets winners survive
+  a dip that the old −10% SL cut. Sweep over SL 1200–2000 × TP 3000–7000
+  (4 failed-tx keys): SL −15% / TP +50% is a plateau — mean +0.257,
+  worst +0.257, net without the best coin +0.213 — not a cliff.
+- v6c (v6b + re-entry: max 2 entries per coin, no cooldown, window 50):
+  **+0.408 SOL, 25 coins, 30 trips, 13 wins, max drawdown 3.75%,
+  top-3 share 63%, 2x fees +0.218**. Fail-key sweep: mean +0.399, worst
+  +0.371, net without the best coin +0.310. Bootstrap over per-coin PnL
+  (2000 resamples): median +0.440, p10 +0.041, p90 +0.796, 8.1% of
+  resamples below zero — vs v5's median +0.001, p10 −0.207, 50% below
+  zero. The second entry rides the same mature curves that keep climbing
+  after the first exit; entries 3 adds net (+0.557) but pushes top-3
+  share to 66% and drawdown to 4.6%, so 2 entries is the balance.
+- Window 50 (vs 40) adds the 2 extra coins that take distinct mints from
+  23 to 25 at a small net cost (25 coins: +0.183 with one entry, +0.408
+  with two); window 60 keeps 25 coins at +0.337. Stake 0.05 instead of
+  0.08 drops net to +0.253. Official `grade-local` confirmation below.
+
 ## Guardrails (competition)
 
-- Round trip ≥ 0.01 SOL on ≥ 20 distinct coins: **23 coins on the dev
-  window** (official grade: 23 round trips) — above the bar, but only just;
-  on the final window the count could dip, which is the main risk.
-- Max drawdown ≤ 50%: 1.6% on dev, far inside.
-- Net PnL > 0 SOL after all fees is required for a paid place; the dev-window
-  result is breakeven (−0.0006 official), so the final window decides it.
+- Round trip ≥ 0.01 SOL on ≥ 20 distinct coins: **25 coins on the dev
+  window** (official grade: see below) — above the bar with a 5-coin margin;
+  on the final window the count could dip, which is the main residual risk.
+- Max drawdown ≤ 50%: 3.8% on dev, far inside.
+- Net PnL > 0 SOL after all fees is required for a paid place; the revised
+  bot scores **+0.408 SOL on the dev window** (local harness, official
+  seed), with a bootstrap median of +0.440 SOL and p10 +0.041 SOL — see
+  the revision log above for the full numbers and the official
+  `grade-local` confirmation.

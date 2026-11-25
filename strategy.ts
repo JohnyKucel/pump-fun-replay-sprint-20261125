@@ -69,7 +69,12 @@ export interface Params {
 }
 
 export const DEFAULT_PARAMS: Params = {
-  windowSlots: 40,
+  // Retuned 2026-11-25 (revisi): exits do the work on this window — a
+  // +50% take-profit banks the spike before it fades, a −15% stop lets a
+  // winner breathe through a dip first, and a coin may be entered twice
+  // with no cooldown so a mature curve that keeps climbing can be ridden
+  // again after the first exit. See DESIGN.md for the tuning log.
+  windowSlots: 50,
   minRiseBps: 300,
   maxRiseBps: 40000,
   minBreakoutBps: 0,
@@ -83,13 +88,13 @@ export const DEFAULT_PARAMS: Params = {
   maxAgeSlots: 400000,
   stakeLamports: 80_000_000n,
   minBuyLamports: 10_000_000n,
-  takeProfitBps: 10000,
-  stopLossBps: 1000,
+  takeProfitBps: 5000,
+  stopLossBps: 1500,
   trailBps: 2500,
   trailArmBps: 1000,
-  maxHoldSlots: 1500,
-  cooldownSlots: 300,
-  maxEntriesPerCoin: 1,
+  maxHoldSlots: 1000,
+  cooldownSlots: 0,
+  maxEntriesPerCoin: 2,
   maxEntriesPerBatch: 4,
   addStepBps: 500,
   nearHighBps: 8000,
